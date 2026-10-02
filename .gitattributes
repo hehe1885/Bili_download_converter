@@ -1,0 +1,18 @@
+# 默认自动识别文本文件并统一换行符
+* text=auto
+
+# Windows 批处理必须用 CRLF，否则 cmd 解析 label / goto 会出错
+*.bat text eol=crlf
+
+# 源码统一 LF
+*.py   text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# 图片按二进制处理，别做换行转换
+*.png binary
+*.jpg binary
+*.ico binary

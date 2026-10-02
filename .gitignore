@@ -1,0 +1,51 @@
+# ---------------- Python ----------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# ---------------- 打包产物 ----------------
+build/
+dist/
+*.spec
+
+# ---------------- 本机运行产物 ----------------
+# config.json 里保存的是本机路径（导入目录 / 输出目录 / ffmpeg 路径），
+# 换台机器就没意义，而且会泄露目录结构，因此不入库。
+# 程序首次运行时会在程序目录（不可写时退到 %APPDATA%\Bili_download_converter\）自动生成。
+config.json
+
+# 转换产生的中间 / 输出文件
+*_testout/
+*_testall/
+_testout/
+_testall/
+output/
+*.mp4
+*.flv
+*.m4s
+*.ass
+*.hash
+*.nfo
+*-poster.jpg
+
+# ---------------- 内部设计文档 ----------------
+# PLAN.md 是开发期的设计提纲，写的是内部实现思路与取舍过程，不是给使用者看的
+# 文档（使用者看 README 就够了），因此不进公开仓库，本地保留。
+PLAN.md
+
+# ---------------- DSH 记忆库（含个人数据，绝不入库）----------------
+.dsh-meow/
+
+# ---------------- 编辑器 / 系统 ----------------
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+desktop.ini
+~$*
