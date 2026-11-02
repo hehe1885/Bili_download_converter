@@ -14,5 +14,5 @@
     converter.py   单任务转换流水线
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["__version__"]

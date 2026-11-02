@@ -6,6 +6,7 @@ import dataclasses
 import enum
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,8 @@ DEFAULT_CONFIG_NAME = "config.json"
 
 def _default_config_path() -> Path:
     """优先放程序目录；不可写时退回 %APPDATA%。"""
-    here = Path(__file__).resolve().parent.parent
+    here = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parent.parent)
     if _is_writable(here):
         return here / DEFAULT_CONFIG_NAME
     import os

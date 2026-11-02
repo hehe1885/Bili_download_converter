@@ -19,7 +19,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QEvent, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -31,7 +31,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -53,6 +52,11 @@ from m4sconverter.utils import CallbackHandler, human_duration
 
 from .options_panel import OptionsPanel
 from .worker import ConvertWorker, ScanWorker
+from .theme import apply_theme, configure_dpi, section_title
+from .ffmpeg_dialog import CheckWorker, FFmpegDialog
+from .cache_help import CacheHelpDialog
+from .widgets import RoundedTable, apply_browser_scrollbars
+from .message_box import MessageBox as QMessageBox
 
 LOG = logging.getLogger("m4s")
 
@@ -83,7 +87,7 @@ class MainWindow(QMainWindow):
 
     log_line = pyqtSignal(str)
 
-    def __init__(self, config_path: Path | None = None) -> None:
+    def __init__(self, config_path: Path | None = None, *, check_dependencies: bool = True) -> None:
         super().__init__()
         self.config_path = Path(config_path) if config_path else default_config_path()
         self.items: list[VideoItem] = []
@@ -91,14 +95,20 @@ class MainWindow(QMainWindow):
         self._finished_rows: set[int] = set()
         self.scan_worker: ScanWorker | None = None
         self.convert_worker: ConvertWorker | None = None
+        self.tool_worker: CheckWorker | None = None
+        self.setup_dialog: FFmpegDialog | None = None
+        self._show_setup_after_check = False
 
         self.setWindowTitle(f"B站缓存转换器 v{__version__}")
-        self.resize(1280, 820)
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(1180, int(screen.width() * .86)), min(760, int(screen.height() * .86)))
 
         self._install_log_handler()
         self._build_ui()
         self._load_startup_config()
         self._install_tool_status()
+        if check_dependencies:
+            QTimer.singleShot(0, self._check_ffmpeg)
 
     # ------------------------------------------------------------------
     # 日志
@@ -126,11 +136,32 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(8, 8, 8, 4)
+        root.setContentsMargins(16, 12, 16, 6)
+        root.setSpacing(10)
+
+        heading = QHBoxLayout()
+        titles = QVBoxLayout()
+        titles.setSpacing(3)
+        title = QLabel("B 站缓存转换器")
+        title.setObjectName("appTitle")
+        subtitle = QLabel("缓存转 MP4 · 无损合并 · 弹幕字幕")
+        subtitle.setObjectName("subtitle")
+        titles.addWidget(title)
+        titles.addWidget(subtitle)
+        heading.addLayout(titles)
+        heading.addStretch(1)
+        self.cache_help_btn = QPushButton("缓存目录在哪？")
+        self.cache_help_btn.clicked.connect(self.show_cache_help)
+        heading.addWidget(self.cache_help_btn)
+        self.dependency_btn = QPushButton("FFmpeg · 检查 / 安装")
+        self.dependency_btn.setObjectName("dependencyButton")
+        self.dependency_btn.clicked.connect(self._open_dependency_check)
+        heading.addWidget(self.dependency_btn)
+        root.addLayout(heading)
 
         # 选项面板要先建：顶部路径栏的双向同步需要连它的控件。
         self.options_panel = OptionsPanel()
-        self.options_panel.setMinimumWidth(400)
+        self.options_panel.setMinimumWidth(340)
 
         root.addWidget(self._build_path_bar())
 
@@ -148,17 +179,19 @@ class MainWindow(QMainWindow):
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         # 左栏宽度要一次给够：QScrollArea 里塞得下才不会出现"控件只显示一半"。
-        splitter.setSizes([470, 890])
+        splitter.setSizes([370, 770])
         self._splitter = splitter
         self._splitter_fitted = False
         root.addWidget(splitter, 1)
 
         self._build_status_bar()
+        apply_browser_scrollbars(self)
 
     def _build_path_bar(self) -> QWidget:
         bar = QWidget()
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
 
         self.top_import_edit = QLineEdit()
         self.top_import_edit.setPlaceholderText("B 站缓存目录")
@@ -181,19 +214,22 @@ class MainWindow(QMainWindow):
         self.preview_btn = QPushButton("预览命名")
         self.preview_btn.clicked.connect(self.on_preview)
         self.start_btn = QPushButton("开始转换")
+        self.start_btn.setProperty("primary", True)
         self.start_btn.clicked.connect(self.on_start)
         self.stop_btn = QPushButton("停止")
         self.stop_btn.clicked.connect(self.on_stop)
         self.stop_btn.setEnabled(False)
 
-        lay.addWidget(QLabel("导入目录"))
+        self.import_title = section_title("导入目录")
+        lay.addWidget(self.import_title)
         lay.addWidget(self.top_import_edit, 3)
         lay.addWidget(imp_btn)
         lay.addSpacing(8)
-        lay.addWidget(QLabel("输出目录"))
+        self.output_title = section_title("输出目录")
+        lay.addWidget(self.output_title)
         lay.addWidget(self.top_output_edit, 2)
         lay.addWidget(out_btn)
-        lay.addSpacing(8)
+        lay.addSpacing(6)
         lay.addWidget(self.scan_btn)
         lay.addWidget(self.preview_btn)
         lay.addWidget(self.start_btn)
@@ -206,7 +242,10 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
 
         tools = QHBoxLayout()
+        self.task_title = section_title("转换任务")
+        tools.addWidget(self.task_title)
         self.task_label = QLabel("尚未扫描")
+        self.task_label.setObjectName("hint")
         tools.addWidget(self.task_label)
         tools.addStretch(1)
 
@@ -217,17 +256,28 @@ class MainWindow(QMainWindow):
             ("删除未勾选", self._remove_unchecked),
         ):
             btn = QPushButton(text)
-            btn.setFixedWidth(84)
+            btn.setMinimumWidth(74)
             btn.clicked.connect(slot)
             tools.addWidget(btn)
         lay.addLayout(tools)
 
-        self.table = QTableWidget(0, len(HEADERS))
+        self.table = RoundedTable(0, len(HEADERS))
         self.table.setHorizontalHeaderLabels(HEADERS)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.empty_state = QLabel(self.table.viewport())
+        self.empty_state.setAlignment(Qt.AlignCenter)
+        self.empty_state.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.empty_state.setText(
+            '<span style="font-size: 17pt; color: #8194b0;">等待添加转换任务</span><br><br>'
+            '<span style="color: #8a99ae;">选择缓存目录后，点击“扫描缓存”</span>')
+        self.table.viewport().installEventFilter(self)
+        self.table.model().rowsInserted.connect(self._update_empty_state)
+        self.table.model().rowsRemoved.connect(self._update_empty_state)
         self.table.itemChanged.connect(self._on_item_changed)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(COL_TITLE, QHeaderView.Stretch)
@@ -240,26 +290,37 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.table, 1)
         return box
 
+    def eventFilter(self, watched, event):
+        if (hasattr(self, "empty_state") and watched is self.table.viewport()
+                and event.type() == QEvent.Resize):
+            self.empty_state.setGeometry(self.table.viewport().rect())
+        return super().eventFilter(watched, event)
+
+    def _update_empty_state(self, *args) -> None:
+        self.empty_state.setVisible(self.table.rowCount() == 0)
+        self.empty_state.setGeometry(self.table.viewport().rect())
+
     def _build_log_area(self) -> QWidget:
         box = QWidget()
         lay = QVBoxLayout(box)
         lay.setContentsMargins(0, 0, 0, 0)
 
         tools = QHBoxLayout()
-        tools.addWidget(QLabel("日志"))
+        self.log_title = section_title("日志")
+        tools.addWidget(self.log_title)
         tools.addStretch(1)
         clear_btn = QPushButton("清空")
-        clear_btn.setFixedWidth(84)
+        clear_btn.setMinimumWidth(80)
         clear_btn.clicked.connect(lambda: self.log_view.clear())
         tools.addWidget(clear_btn)
 
         self.save_cfg_btn = QPushButton("保存配置")
-        self.save_cfg_btn.setFixedWidth(104)
+        self.save_cfg_btn.setMinimumWidth(112)
         self.save_cfg_btn.clicked.connect(self.on_save_config)
         tools.addWidget(self.save_cfg_btn)
 
         load_cfg_btn = QPushButton("导入配置…")
-        load_cfg_btn.setFixedWidth(104)
+        load_cfg_btn.setMinimumWidth(112)
         load_cfg_btn.clicked.connect(self.on_load_config)
         tools.addWidget(load_cfg_btn)
         lay.addLayout(tools)
@@ -366,6 +427,61 @@ class MainWindow(QMainWindow):
         if not ok:
             self.status_label.setText("未找到可用的合并引擎，请检查 ffmpeg / MP4Box")
 
+    def show_cache_help(self) -> None:
+        self.cache_help_dialog = CacheHelpDialog(self)
+        self.cache_help_dialog.directory_selected.connect(self.top_import_edit.setText)
+        self.cache_help_dialog.open()
+
+    def _open_dependency_check(self) -> None:
+        self._show_setup_after_check = True
+        self._check_ffmpeg()
+
+    def _check_ffmpeg(self) -> None:
+        if self.tool_worker is not None and self.tool_worker.isRunning():
+            return
+        self.dependency_btn.setEnabled(False)
+        self.dependency_btn.setText("FFmpeg · 正在检测…")
+        self.tool_worker = CheckWorker(self.current_options(), self)
+        self.tool_worker.checked.connect(self._ffmpeg_checked)
+        self.tool_worker.finished.connect(self._tool_check_finished)
+        self.tool_worker.start()
+
+    def _tool_check_finished(self) -> None:
+        self.dependency_btn.setEnabled(True)
+
+    def _ffmpeg_checked(self, path: str) -> None:
+        requested = self._show_setup_after_check
+        self._show_setup_after_check = False
+        if path:
+            self.options_panel.ffmpeg_edit.setText(path)
+            self.dependency_btn.setText("FFmpeg · 已就绪")
+            self.dependency_btn.setToolTip(path)
+            self._append_log(f"FFmpeg 运行验证通过：{path}")
+            if requested:
+                QMessageBox.information(self, "FFmpeg 已就绪", f"已检测到可用的 FFmpeg：\n{path}")
+        else:
+            self.dependency_btn.setText("FFmpeg · 需要安装")
+            self.show_ffmpeg_setup()
+
+    def show_ffmpeg_setup(self) -> None:
+        if self.setup_dialog is not None and self.setup_dialog.isVisible():
+            self.setup_dialog.raise_()
+            return
+        self.setup_dialog = FFmpegDialog(self)
+        self.setup_dialog.configured.connect(self._ffmpeg_configured)
+        self.setup_dialog.open()
+
+    def _ffmpeg_configured(self, path: str) -> None:
+        self.options_panel.ffmpeg_edit.setText(path)
+        self.dependency_btn.setText("FFmpeg · 已就绪")
+        self.dependency_btn.setToolTip(path)
+        self.status_label.setText("FFmpeg 已就绪")
+        self._append_log(f"FFmpeg 已配置：{path}")
+        try:
+            save_options(self.current_options(), self.config_path)
+        except OSError as exc:
+            self._append_log(f"配置保存失败：{exc}；本次仍可使用。")
+
     # ------------------------------------------------------------------
     # 扫描
     # ------------------------------------------------------------------
@@ -416,7 +532,7 @@ class MainWindow(QMainWindow):
         if len(report.warnings) > 50:
             self._append_log(f"[!] 其余 {len(report.warnings) - 50} 条警告已省略")
         self._append_log(describe(report, limit=10))
-        self.task_label.setText(f"共 {len(self.items)} 个任务（勾选后点“开始转换”）")
+        self.task_label.setText(f"{len(self.items)} 项")
         self.status_label.setText(f"扫描完成：{len(self.items)} 个任务，"
                                   f"遍历 {report.scanned_dirs} 个目录，"
                                   f"耗时 {report.elapsed:.2f}s")
@@ -487,7 +603,7 @@ class MainWindow(QMainWindow):
         self.rows = {id(it): idx for idx, it in enumerate(self.items)}
         self._finished_rows.clear()
         self._fill_table()
-        self.task_label.setText(f"共 {len(self.items)} 个任务")
+        self.task_label.setText(f"{len(self.items)} 项")
 
     # ------------------------------------------------------------------
     # 预览
@@ -543,7 +659,7 @@ class MainWindow(QMainWindow):
         opt = self.current_options()
         ok, text = check_tools(opt)
         if not ok:
-            QMessageBox.critical(self, "缺少合并引擎", text)
+            self.show_ffmpeg_setup()
             return
 
         for item in targets:
@@ -674,11 +790,13 @@ class MainWindow(QMainWindow):
         total = self._splitter.width()
         if total <= 0:
             return
-        # 左栏给到它想要的宽度，但至少 470、且给右侧留够 420。
-        left = min(max(470, need), max(400, total - 420))
+        # 紧凑布局：左栏控制在 350–400，优先为任务列表留出空间。
+        left = min(max(350, need), 400, max(340, total - 540))
         self._splitter.setSizes([left, max(1, total - left)])
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self.tool_worker is not None and self.tool_worker.isRunning():
+            self.tool_worker.wait(9000)
         if self.convert_worker is not None and self.convert_worker.isRunning():
             answer = QMessageBox.question(self, "仍在转换",
                                           "转换还没结束，确定退出吗？",
@@ -692,6 +810,7 @@ class MainWindow(QMainWindow):
             save_options(self.current_options(), self.config_path)
         except Exception:  # noqa: BLE001 - 退出时保存失败不打扰用户
             LOG.debug("退出时保存配置失败", exc_info=True)
+        logging.getLogger("m4s").removeHandler(self._log_handler)
         super().closeEvent(event)
 
 
@@ -709,10 +828,7 @@ def resource_path(relative: str) -> Path:
 
 def run(argv: list[str] | None = None) -> int:
     """创建 QApplication 并显示主窗口。"""
-    if hasattr(Qt, "AA_EnableHighDpiScaling"):
-        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    if hasattr(Qt, "AA_UseHighDpiPixmaps"):
-        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    configure_dpi()
 
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Bili_download_converter")
@@ -725,11 +841,7 @@ def run(argv: list[str] | None = None) -> int:
             app.setWindowIcon(QIcon(str(icon_file)))
             break
 
-    app.setStyleSheet(
-        "QGroupBox { font-weight: bold; margin-top: 10px; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
-        "QPushButton { padding: 5px 10px; }"
-    )
+    apply_theme(app)
 
     window = MainWindow()
     window.show()

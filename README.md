@@ -48,10 +48,16 @@
 ## 下载即用（免安装）
 
 不想装 Python？直接去 [Releases](../../releases) 页面下载最新的
-`Bili_download_converter_v0.1.0_win64.zip`，解压后双击 `Bili_download_converter.exe` 即可。
+对应版本的 `Bili_download_converter_v<版本号>_win64.zip`，解压后双击 `Bili_download_converter.exe` 即可。
 
-压缩包里已经有图标、README 和许可证，**只需要再准备一个 `ffmpeg.exe`**（见下一节）。
-把它放进系统 PATH，或者在界面左侧「合并引擎」里直接填 `ffmpeg.exe` 的绝对路径。
+压缩包里已经有图标、README 和许可证。**v0.2.0 启动时会自动检测 FFmpeg**，
+未安装或无法运行时弹出安装引导，点击「一键安装」即可下载、校验并配置 PATH。
+默认安装到 Program Files 并写入**系统 PATH**，Windows 会请求管理员授权；
+取消勾选后改为当前用户安装，并写入用户 PATH，无需管理员权限。
+安装后本软件立即可用，已经打开的终端和其他软件需要重新打开才能获得新的 PATH。
+也可以点击「选择已有 FFmpeg…」，使用自己已经安装的程序。
+
+![FFmpeg 安装引导](docs/ffmpeg-setup.png)
 
 > 首次运行时 Windows Defender 可能提示"未知发布者"——这是未签名 exe 的正常提示，
 > 点「更多信息 → 仍要运行」即可。介意的话可以按[打包成独立 exe](#打包成独立-exe)自己编译。
@@ -63,7 +69,7 @@
 | 依赖 | 说明 |
 |---|---|
 | Python | 3.10+（开发环境为 3.14） |
-| ffmpeg | **必需**，需在 PATH 中或手动指定路径 |
+| ffmpeg | **必需**，Windows 64 位图形界面可一键安装并配置 PATH，也支持手动指定路径 |
 | MP4Box | 可选，填了才用 |
 | PyQt5 | 仅 GUI 需要，`pip install PyQt5` |
 
@@ -75,7 +81,10 @@ cd Bili_download_converter
 pip install -r requirements.txt
 ```
 
-**ffmpeg 怎么装？** 到 [ffmpeg.org](https://ffmpeg.org/download.html) 或
+**ffmpeg 怎么装？** Windows 用户可直接使用软件的安装引导；点击右上角
+「FFmpeg · 检查 / 安装」也能重新检测。安装包来自 gyan.dev，下载后验证 SHA-256；
+失败可重试，取消管理员授权后可改用当前用户安装。
+手动安装可到 [ffmpeg.org](https://ffmpeg.org/download.html) 或
 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下载 Windows 版，解压后把
 `bin` 目录加进 PATH；或者干脆只记住 `ffmpeg.exe` 的完整路径，填进软件的设置里。
 装好后用 `python cli.py --check` 自检，能打印出 `[OK] 可用: ffmpeg=...` 就说明就位了。
@@ -93,6 +102,10 @@ python main.py
 （下载的 exe 版本直接双击 `Bili_download_converter.exe`。）
 
 ### 2. 找到 B 站缓存目录
+
+不清楚缓存在哪里？点击右上角 **缓存目录在哪？**，查看各平台的常见路径和目录结构。
+Windows 路径会自动替换为当前用户名；如果该目录存在，可点「使用这个目录」直接填入导入目录。
+常见位置不存在时，请在 B 站客户端设置中查看你实际使用的下载位置。
 
 B 站客户端缓存目录结构大致长这样：
 
@@ -114,7 +127,8 @@ download/                                  ← 「导入目录」选这一层
 
 | 平台 | 路径 |
 | --- | --- |
-| 安卓手机 | `我的手机/Android/data/tv.danmaku.bili/download` |
+| 安卓手机（国内版） | `我的手机/Android/data/tv.danmaku.bili/download` |
+| 安卓手机（国际版） | `我的手机/Android/data/com.bilibili.app.in/download` |
 | Windows | `C:\Users\<你的用户名>\AppData\Roaming\BilibiliDownload\cache\data` |
 | macOS | `/Users/<你的用户名>/Library/Application Support/Bilibili/com.bilibili.downloads/web_cache/data` |
 | iOS | 通过 B 站 App 的「我的下载」栏目查看 |
@@ -141,6 +155,9 @@ download/                                  ← 「导入目录」选这一层
 不想要的先取消勾选，再点 **删除未勾选** 从列表里清掉。
 
 ### 5. 按需调整左侧选项
+
+v0.2.0 将选项分成「输出 / 弹幕 / 附属 / 高级」四页；合并引擎位于「高级」页。
+界面使用更大的中文字体和高 DPI 缩放，滚动条、页签及控件统一采用圆角样式。
 
 默认值就是推荐值，**第一次用可以完全不动**。想改的话：
 
@@ -364,13 +381,13 @@ build.bat onedir D:\out       rem 自定义输出目录
 脚本会自动安装 PyQt5 / PyInstaller，编译自检后用 PyInstaller 打一次 windowed 包
 （不含控制台黑框），并套上 `assets/icon.ico` 作为程序图标。
 
-产物默认写到**桌面**上的 `Bili_download_converter_v0.1.0\`，刻意放在项目外面，
+产物默认写到**桌面**上的 `Bili_download_converter_v<版本号>\`，刻意放在项目外面，
 避免把构建垃圾塞进仓库。目录版的 exe 在 `Bili_download_converter\Bili_download_converter.exe`。
 
 > 打包脚本刻意写成**纯 ASCII**：`cmd.exe` 按系统 ANSI 代码页（中文 Windows 是 GBK）
 > 解析 `.bat`，脚本里出现 UTF-8 中文会被解析成乱码命令。改脚本时请保持 ASCII。
 
-产物仍然需要外部的 `ffmpeg.exe`：要么放进 PATH，要么在界面的「合并引擎」里指定路径。
+产物启动时会检测外部 `ffmpeg.exe`，缺失时提供一键安装和 PATH 配置。
 
 ---
 
@@ -388,7 +405,7 @@ Copyright (c) 2026 hehe1885
 
 | 组件 | 协议 | 是否随本项目分发 |
 |---|---|---|
-| [ffmpeg](https://ffmpeg.org/) | LGPL / GPL（取决于编译选项） | ❌ 需用户自行安装 |
+| [ffmpeg](https://ffmpeg.org/) | LGPL / GPL（取决于编译选项） | 不内置；可通过安装引导另行下载，保留上游 LICENSE 和 README |
 | [PyQt5](https://riverbankcomputing.com/software/pyqt/) | GPL v3 / 商业双许可 | 打包进 exe 时随附 |
 | Qt 运行时 | LGPL v3 | 同上 |
 | Python 标准库 | PSF License | 同上 |

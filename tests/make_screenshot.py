@@ -105,19 +105,21 @@ def build_demo_cache(root: Path) -> Path:
     return root
 
 
-def render(src: Path, out: Path, note: str) -> int:
+def render(src: Path, out: Path, note: str, *, demo: bool = False) -> int:
+    mw.configure_dpi()
     app = QApplication([])
+    mw.apply_theme(app)
 
     # 用一个临时 config.json，避免读进本机上次保存的选项（否则截图内容会飘），
     # 也避免退出时把演示配置写回用户真正的配置文件。
     cfg_dir = Path(tempfile.mkdtemp(prefix="m4s-shot-cfg-"))
-    win = mw.MainWindow(config_path=cfg_dir / "config.json")
+    win = mw.MainWindow(config_path=cfg_dir / "config.json", check_dependencies=False)
     win.resize(1360, 820)
     win.show()
 
     # 显式给一组"标准"选项，出图才有可比性。
     opt = Options()
-    opt.import_dir = str(src)
+    opt.import_dir = str(DISPLAY_ROOT if demo else src)
     opt.output_dir = ""            # 留空 = <导入目录>\output
     opt.layout = LayoutMode.FLAT   # 平铺：output\视频名.mp4
     opt.ass.enabled = True
@@ -125,6 +127,9 @@ def render(src: Path, out: Path, note: str) -> int:
 
     report = scanner.scan(src, opt)
     win._on_scanned(report)
+    # Startup and scanner logs can include the real temporary config/cache path.
+    # Public previews should contain only the deliberate demonstration message.
+    win.log_view.clear()
     win._append_log(note)
     for _ in range(4):
         app.processEvents()
@@ -152,7 +157,7 @@ def main() -> int:
     root = _pick_demo_root()
     try:
         build_demo_cache(root)
-        return render(root, out, f"示例：{len(DEMO_ITEMS)} 个任务（内置演示数据，非真实缓存）")
+        return render(root, out, f"示例：{len(DEMO_ITEMS)} 个任务（内置演示数据，非真实缓存）", demo=True)
     finally:
         # 只删我们自己造的那几个 avid 目录，绝不碰 root 下别的东西。
         for i in range(1, len(DEMO_ITEMS) + 1):

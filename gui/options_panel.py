@@ -16,10 +16,10 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -34,6 +34,11 @@ from m4sconverter.models import (
     Options,
 )
 from m4sconverter.naming import TEMPLATE_FIELDS, layout_template
+from .widgets import AnimatedComboBox
+from .message_box import MessageBox as QMessageBox
+
+# All option menus share the same opening/closing animation.
+QComboBox = AnimatedComboBox
 
 #: 常见中文字体，方便一键切换。
 COMMON_FONTS = ["黑体", "微软雅黑", "思源黑体", "宋体", "楷体", "仿宋", "Arial", "Noto Sans CJK SC"]
@@ -49,7 +54,7 @@ CANVAS_PRESETS = [
 def _hint(text: str) -> QLabel:
     lab = QLabel(text)
     lab.setWordWrap(True)
-    lab.setStyleSheet("color: #666; font-size: 11px;")
+    lab.setObjectName("hint")
     return lab
 
 
@@ -84,41 +89,45 @@ class OptionsPanel(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        outer.addWidget(scroll)
-
-        body = QWidget()
-        scroll.setWidget(body)
-        layout = QVBoxLayout(body)
-        layout.setSpacing(8)
-
-        layout.addWidget(self._group_io())
-        layout.addWidget(self._group_naming())
-        layout.addWidget(self._group_ass())
-        layout.addWidget(self._group_sidecar())
-        layout.addWidget(self._group_hash())
-        layout.addWidget(self._group_behavior())
-        layout.addWidget(self._group_engine())
-        layout.addStretch(1)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs)
+        for title, builders in (
+            ("输出", (self._group_io, self._group_naming)),
+            ("弹幕", (self._group_ass,)),
+            ("附属", (self._group_sidecar, self._group_hash)),
+            ("高级", (self._group_behavior, self._group_engine)),
+        ):
+            scroll = QScrollArea(self)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            body = QWidget()
+            scroll.setWidget(body)
+            layout = QVBoxLayout(body)
+            layout.setContentsMargins(0, 0, 12, 0)
+            layout.setSpacing(12)
+            for build in builders:
+                layout.addWidget(build())
+            layout.addStretch(1)
+            self.tabs.addTab(scroll, title)
 
     # -- 输入输出 ------------------------------------------------------
     def _group_io(self) -> QGroupBox:
-        box = QGroupBox("输入 / 输出")
+        box = QGroupBox("输出方式")
         form = QFormLayout(box)
         form.setLabelAlignment(Qt.AlignRight)
 
-        self.import_edit = QLineEdit()
+        self.import_edit = QLineEdit(box)
         self.import_edit.setPlaceholderText("B 站缓存目录（含 m4s 的目录）")
-        form.addRow("导入目录", self._with_browse(self.import_edit, self._pick_import))
+        self.import_edit.hide()  # Actual directory fields live in the main toolbar.
 
-        self.output_edit = QLineEdit()
+        self.output_edit = QLineEdit(box)
         self.output_edit.setPlaceholderText("留空 = <导入目录>\\output")
-        form.addRow("输出目录", self._with_browse(self.output_edit, self._pick_output))
+        self.output_edit.hide()
 
         self.per_import_check = QCheckBox("再按导入目录名分子文件夹")
         form.addRow("", self.per_import_check)
+        form.addRow(_hint("在上方选择导入和输出目录。输出目录留空时，保存到缓存目录下的 output 文件夹。"))
         return box
 
     # -- 命名 ----------------------------------------------------------
@@ -144,7 +153,7 @@ class OptionsPanel(QWidget):
         self.template_edit = QLineEdit()
         self.template_edit.setPlaceholderText("{title}.mp4")
         help_btn = QPushButton("占位符…")
-        help_btn.setFixedWidth(84)
+        help_btn.setMinimumWidth(96)
         help_btn.clicked.connect(self._show_template_help)
         form.addRow("命名模板", self._with_button(self.template_edit, help_btn))
 
@@ -381,7 +390,7 @@ class OptionsPanel(QWidget):
 
         self.engine_combo = QComboBox()
         for label, mode, tip in (
-            ("自动（推荐）", Engine.AUTO, "优先用 MP4Box，找不到则退回 ffmpeg"),
+            ("自动（推荐）", Engine.AUTO, "优先用 ffmpeg，找不到则退回 MP4Box"),
             ("只用 ffmpeg", Engine.FFMPEG, "任何情况都用 ffmpeg 合并"),
             ("只用 MP4Box", Engine.MP4BOX, "MP4Box 不可用时直接报错"),
         ):
@@ -415,7 +424,7 @@ class OptionsPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(edit, 1)
         btn = QPushButton("…")
-        btn.setFixedWidth(28)
+        btn.setFixedWidth(40)
         btn.clicked.connect(lambda: slot(edit, is_file))
         lay.addWidget(btn)
         return holder

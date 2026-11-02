@@ -1,5 +1,5 @@
 # 核心引擎（m4sconverter/）与命令行（cli.py）只依赖 Python 标准库。
-# 外部程序需要自备 ffmpeg 或 MP4Box 之一，它们不是 pip 包。
+# 外部程序需要 ffmpeg 或 MP4Box 之一；Windows 图形界面支持一键安装 ffmpeg。
 
 # 图形界面（gui/）需要：
 PyQt5>=5.15

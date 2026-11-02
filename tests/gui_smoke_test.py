@@ -22,7 +22,8 @@ if str(ROOT) not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PyQt5.QtWidgets import QApplication  # noqa: E402
+from gui.message_box import MessageBox as QMessageBox  # noqa: E402
 
 from gui.main_window import MainWindow  # noqa: E402
 from m4sconverter.models import (  # noqa: E402
@@ -206,7 +207,7 @@ def main() -> int:
     _silence_dialogs()
 
     tmp = Path(tempfile.mkdtemp(prefix="m4s-gui-test-"))
-    win = MainWindow(config_path=tmp / "config.json")
+    win = MainWindow(config_path=tmp / "config.json", check_dependencies=False)
     win.show()
     app.processEvents()
 

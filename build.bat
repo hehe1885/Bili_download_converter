@@ -115,8 +115,8 @@ if /i "%MODE%"=="onefile" (
     echo   output: %OUTDIR%\%APPNAME%\%APPNAME%.exe
 )
 echo.
-echo   NOTE: the exe still needs an external ffmpeg.exe - either on
-echo         PATH, or set its path in the "engine" section of the GUI.
+echo   NOTE: the GUI checks FFmpeg on startup and offers one-click
+echo         installation with persistent system or user PATH setup.
 echo ============================================================
 echo.
 pause

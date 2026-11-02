@@ -9,11 +9,13 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .models import Engine, Options
 from .utils import run_command
+from .ffmpeg_setup import install_bin
 
 LOG = logging.getLogger("m4s")
 
@@ -76,7 +78,9 @@ def find_tools(options: Options | None = None) -> MuxTools:
     tools = MuxTools()
 
     here = Path(__file__).resolve().parent.parent
-    local_bin = [here / "bin" / "ffmpeg.exe", here / "bin" / "ffmpeg",
+    local_bin = [install_bin(True) / "ffmpeg.exe", install_bin() / "ffmpeg.exe",
+                 Path(sys.executable).resolve().parent / "bin" / "ffmpeg.exe",
+                 here / "bin" / "ffmpeg.exe", here / "bin" / "ffmpeg",
                  Path.cwd() / "bin" / "ffmpeg.exe"]
 
     ffmpeg = _first_existing([opts.ffmpeg_path] if opts.ffmpeg_path else [])
