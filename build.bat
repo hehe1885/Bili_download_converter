@@ -97,7 +97,8 @@ if /i "%MODE%"=="onefile" set "OPTS=%OPTS% --onefile"
 
 python -m PyInstaller %OPTS% main.py || goto :fail
 
-rem ---------- 6. docs next to the exe ----------
+rem ---------- 6. README and license next to the exe ----------
+rem Do not include the project docs folder in release packages.
 if /i "%MODE%"=="onefile" (
     set "PKGDIR=%OUTDIR%"
 ) else (

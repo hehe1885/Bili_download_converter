@@ -42,7 +42,7 @@ from .models import (
     VideoItem,
 )
 from .mux import MuxTools, ensure_playable, find_tools, mux, pick_engine, probe_video_dims
-from .utils import make_work_dir, sanitize_name, silent_remove
+from .utils import make_work_dir, sanitize_name, silent_remove, run_command
 
 LOG = logging.getLogger("m4s")
 
@@ -77,6 +77,7 @@ class Converter:
         self.engine = pick_engine(options, self.tools)
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self._target_locks: dict[str, threading.Lock] = {}
         self._import_root = Path(options.import_dir).expanduser() if options.import_dir else None
         self._output_root = Path(output_root).expanduser() if output_root else None
 
@@ -131,7 +132,11 @@ class Converter:
 
         started = time.time()
         try:
-            result = self._convert_one(item)
+            target, _ = naming.resolve_output_path(item, self.options, self.resolve_output_root(item))
+            with self._lock:
+                target_lock = self._target_locks.setdefault(str(target).casefold(), threading.Lock())
+            with target_lock:
+                result = self._convert_one(item)
         except Exception as exc:  # noqa: BLE001 - 单个任务失败不能拖垮队列
             LOG.exception("转换异常: %s", item.primary_title())
             result = ConvertResult(item, ok=False, error=f"{type(exc).__name__}: {exc}")
@@ -188,9 +193,9 @@ class Converter:
     def _convert_one(self, item: VideoItem) -> ConvertResult:
         opts = self.options
 
-        if item.video_src is None or item.audio_src is None:
-            return ConvertResult(item, ok=False, error="缺少音视频轨道")
-        for src in (item.video_src, item.audio_src):
+        if item.video_src is None or (item.audio_src is None and not item.video_only):
+            return ConvertResult(item, ok=False, error="缺少音视频轨道或无法识别视频")
+        for src in filter(None, (item.video_src, item.audio_src)):
             if not src.is_file():
                 return ConvertResult(item, ok=False, error=f"源文件不存在: {src}")
 
@@ -204,7 +209,7 @@ class Converter:
             # --- 3. 预处理 ---
             self._emit(item, "预处理 m4s", _STEP_PREPARE * 0.4)
             video, v_stripped = ensure_playable(item.video_src, work)
-            audio, a_stripped = ensure_playable(item.audio_src, work)
+            audio, a_stripped = ensure_playable(item.audio_src, work) if item.audio_src else (None, False)
             if v_stripped or a_stripped:
                 LOG.info("剥离 m4s 前缀: %s", item.primary_title())
 
@@ -220,10 +225,10 @@ class Converter:
 
             # --- 5. 查重 ---
             input_hash = ""
-            if opts.hash_mode is not HashMode.OFF:
+            if audio is not None and opts.hash_mode is not HashMode.OFF:
                 input_hash = hashfile.combined_md5(video, audio)
 
-            if opts.skip_existing:
+            if audio is not None and opts.skip_existing:
                 duplicate = hashfile.find_duplicate(target, video, audio, input_hash)
                 if duplicate is not None:
                     return ConvertResult(item, ok=True, output=duplicate, skipped=True,
@@ -250,8 +255,17 @@ class Converter:
             if opts.embed_cover and item.cover_local and item.cover_local.is_file():
                 cover = item.cover_local
             tags = self._tags(item) if opts.write_metadata else None
-            result = mux(video, audio, final, opts, tags=tags, cover=cover,
-                         tools=self.tools, engine=self.engine)
+            if audio is None:
+                if not self.tools.ffmpeg:
+                    return ConvertResult(item, ok=False, error="导出无声视频需要 FFmpeg")
+                final.parent.mkdir(parents=True, exist_ok=True)
+                code, output = run_command([str(self.tools.ffmpeg), "-y", "-i", str(video), "-map", "0:v:0", "-c", "copy", str(final)], timeout=3600)
+                if code != 0:
+                    return ConvertResult(item, ok=False, error=f"无声视频导出失败: {output[-1000:]}")
+                from .mux import MuxResult
+                result = MuxResult(True, final, "无声视频导出成功")
+            else:
+                result = mux(video, audio, final, opts, tags=tags, cover=cover, tools=self.tools, engine=self.engine)
             if not result.ok:
                 if opts.summarize_unmerged:
                     self._summarize_unmerged(item, output_root)

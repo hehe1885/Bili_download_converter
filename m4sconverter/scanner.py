@@ -270,12 +270,18 @@ def scan(root: str | Path, options: Options | None = None,
 
         video, audio, how = pair_m4s(m4s, hint)
         if video is None or audio is None:
-            if len(m4s) == 1:
-                orphan_dirs.append(str(directory))
-                LOG.debug("只有单个 m4s，跳过: %s", directory)
-            else:
-                orphan_dirs.append(str(directory))
-                LOG.warning("无法配对音视频（%d 个 m4s）: %s", len(m4s), directory)
+            from .mux import probe_tracks
+            orphan_dirs.append(str(directory))
+            LOG.warning("无法配对音视频: %s; 文件: %s", directory, ", ".join(p.name for p in m4s))
+            for source in m4s:
+                kind = probe_tracks(source)
+                item = build_item(directory, root_path, source if kind == "video" else None, None, len(report.items) + 1)
+                item.selected = False
+                item.video_only = kind == "video"
+                item.state = ItemState.FAILED
+                item.message = ("缺少音频；勾选后可导出无声视频" if item.video_only else "无法配对，未识别为视频：" + source.name)
+                item.info_raw["_orphan_source"] = str(source)
+                report.items.append(item)
             continue
 
         item = build_item(directory, root_path, video, audio, len(report.items) + 1)
@@ -296,6 +302,7 @@ def scan(root: str | Path, options: Options | None = None,
     for i, item in enumerate(report.items, 1):
         item.index = i
 
+    report.scanned_dirs = ctx.scanned_dirs
     report.elapsed = time.time() - started
     LOG.info(
         "扫描完成: %d 个可转换单元 / 跳过未完成 %d / 遍历 %d 个目录 / 耗时 %.2fs",
@@ -312,7 +319,7 @@ def describe(report: ScanReport, limit: int = 20) -> str:
         f"扫描到 {len(report.items)} 个单元（耗时 {report.elapsed:.2f}s）",
     ]
     for item in report.items[:limit]:
-        size = _safe_size(item.video_src) + _safe_size(item.audio_src) if item.video_src else 0
+        size = sum(_safe_size(src) for src in (item.video_src, item.audio_src) if src is not None)
         q = f" [{item.quality}]" if item.quality else ""
         lines.append(
             f"  {item.index:>3}. {item.primary_title()[:48]}{q}  "

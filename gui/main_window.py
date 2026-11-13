@@ -16,6 +16,8 @@
 from __future__ import annotations
 
 import logging
+import datetime
+import shutil
 import sys
 from pathlib import Path
 
@@ -103,6 +105,8 @@ class MainWindow(QMainWindow):
         screen = QApplication.primaryScreen().availableGeometry()
         self.resize(min(1180, int(screen.width() * .86)), min(760, int(screen.height() * .86)))
 
+        self.log_dir = self.config_path.parent / "logs"
+        self._prepare_logs()
         self._install_log_handler()
         self._build_ui()
         self._load_startup_config()
@@ -114,6 +118,31 @@ class MainWindow(QMainWindow):
     # 日志
     # ------------------------------------------------------------------
 
+    def _prepare_logs(self) -> None:
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            today = datetime.date.today().isoformat()
+            for path in self.log_dir.glob("bili-????-??-??.log"):
+                if path.name != f"bili-{today}.log":
+                    path.unlink()
+        except OSError:
+            pass
+
+    def on_export_log(self) -> None:
+        self._prepare_logs()
+        source = self.log_dir / f"bili-{datetime.date.today().isoformat()}.log"
+        path, _ = QFileDialog.getSaveFileName(self, "导出今日日志", source.name, "日志文件 (*.log);;文本文件 (*.txt)")
+        if not path:
+            return
+        try:
+            if not source.exists():
+                source.write_text("", encoding="utf-8")
+            if Path(path).resolve() != source.resolve():
+                shutil.copyfile(source, path)
+            self.status_label.setText("日志已导出")
+        except OSError as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+
     def _install_log_handler(self) -> None:
         self.log_line.connect(self._append_log)
         logger = logging.getLogger("m4s")
@@ -124,6 +153,12 @@ class MainWindow(QMainWindow):
         self._log_handler = handler
 
     def _append_log(self, text: str) -> None:
+        self._prepare_logs()
+        try:
+            with (self.log_dir / f"bili-{datetime.date.today().isoformat()}.log").open("a", encoding="utf-8") as log:
+                log.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} {text}\n")
+        except OSError:
+            pass
         self.log_view.appendPlainText(text)
         bar = self.log_view.verticalScrollBar()
         bar.setValue(bar.maximum())
@@ -263,7 +298,7 @@ class MainWindow(QMainWindow):
 
         self.table = RoundedTable(0, len(HEADERS))
         self.table.setHorizontalHeaderLabels(HEADERS)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
@@ -309,6 +344,9 @@ class MainWindow(QMainWindow):
         self.log_title = section_title("日志")
         tools.addWidget(self.log_title)
         tools.addStretch(1)
+        export_btn = QPushButton("导出今日日志…")
+        export_btn.clicked.connect(self.on_export_log)
+        tools.addWidget(export_btn)
         clear_btn = QPushButton("清空")
         clear_btn.setMinimumWidth(80)
         clear_btn.clicked.connect(lambda: self.log_view.clear())
@@ -547,7 +585,7 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, COL_CHECK, check)
 
             self.table.setItem(row, COL_INDEX, QTableWidgetItem(str(row + 1)))
-            self.table.setItem(row, COL_TITLE, QTableWidgetItem(item.primary_title()))
+            self.table.setItem(row, COL_TITLE, QTableWidgetItem(item.output_title or item.primary_title()))
             self.table.setItem(row, COL_UP, QTableWidgetItem(item.up))
             self.table.setItem(row, COL_QUALITY, QTableWidgetItem(item.quality or item.qid))
             self.table.setItem(row, COL_DURATION,
@@ -557,6 +595,12 @@ class MainWindow(QMainWindow):
             self._set_state_cell(row, item.state)
             self.table.setItem(row, COL_PROGRESS, QTableWidgetItem(""))
             self.table.setItem(row, COL_MESSAGE, QTableWidgetItem(item.message))
+            for col in range(len(HEADERS)):
+                cell = self.table.item(row, col)
+                if cell is not None and col != COL_TITLE:
+                    cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
+            self.table.item(row, COL_TITLE).setToolTip("双击修改输出标题；适用于包含标题的命名模板")
+            self.table.item(row, COL_MESSAGE).setToolTip(str(item.info_raw.get("_orphan_source", item.media_dir)))
         self.table.blockSignals(False)
 
     def _set_state_cell(self, row: int, state: ItemState) -> None:
@@ -568,9 +612,12 @@ class MainWindow(QMainWindow):
         cell.setForeground(QColor(STATE_COLORS.get(state, "#444")))
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        row = item.row()
+        if item.column() == COL_TITLE and 0 <= row < len(self.items):
+            self.items[row].output_title = item.text().strip()
+            return
         if item.column() != COL_CHECK:
             return
-        row = item.row()
         if 0 <= row < len(self.items):
             self.items[row].selected = item.checkState() == Qt.Checked
 

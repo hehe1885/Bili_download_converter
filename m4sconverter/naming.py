@@ -57,7 +57,7 @@ def build_context(
     """
     now = now or _dt.datetime.now()
     raw: dict[str, object] = {
-        "title": item.primary_title(),
+        "title": item.output_title or item.primary_title(),
         "part": item.part_title(),
         "up": item.up or item.owner_id or "",
         "group": item.group or "",

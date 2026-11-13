@@ -211,6 +211,8 @@ class VideoItem:
     message: str = ""
     progress: float = 0.0
     output_path: Path | None = None
+    output_title: str = ""
+    video_only: bool = False
 
     # ------------------------------------------------------------------
     @property
