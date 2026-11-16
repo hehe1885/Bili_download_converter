@@ -1,3 +1,17 @@
+# 0.2.2
+
+- 修复 Windows PC 客户端缓存（`C:\Users\<用户>\Videos\bilibili`）音视频轨道配对失败的问题：兼容同目录同时存在 `videoInfo.json`/`.videoInfo` 与 `.playurl` 的情况，支持 `dash.video[].id + 30000`（如 `30080`/`30112`/`30116`）及 `baseUrl` 轨道号映射。
+- 修复扫描期 MP4 Box 嗅探（`_sniff_handler_type`）未跳过 PC 端 9 字节 `000000000` 前缀的问题，纯 Python 即可直接识别音视频流类型。
+- 补齐 PC 端 `videoInfo.json` 与 `.playurl` 元数据解析（画质号 `qn`、画质描述、宽高、毫秒时长、弹幕数、单集封面 `image.jpg` 优先级，以及合集分P `tabName="正片"` 的回退处理）。
+- 新增 PC 端 `dm1`/`dm2`… 与移动端 `danmaku.pb`（`DmSegMobileReply` Protobuf）本地弹幕解析，支持离线生成 `.ass` 字幕及导出 `.danmaku.xml`。
+- 更新「缓存目录在哪？」帮助弹窗，优先检测新版 Windows 客户端默认路径 `Videos\bilibili`。
+- 顶部工具栏新增「检查更新」按钮，支持后台查询 GitHub Releases 最新版本并一键跳转下载页。
+
+# 0.2.1
+
+- 支持在任务列表中双击「标题」列直接修改单条任务的输出标题。
+- 支持对缺少音频的视频导出无声视频，并新增「导出今日日志」按钮。
+
 # 0.2.0
 
 - 小标题、安卓版本标签和列表表头改用常规字重，减轻小字号中文笔画拥挤、模糊的观感。

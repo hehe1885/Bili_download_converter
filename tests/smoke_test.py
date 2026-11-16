@@ -28,10 +28,12 @@ from m4sconverter.danmaku.ass_writer import (  # noqa: E402
     time_to_string,
     write_ass,
 )
-from m4sconverter.danmaku.xml_parser import parse_bullet_p  # noqa: E402
+from m4sconverter.danmaku.xml_parser import parse_bullet_p, parse_danmaku_pb  # noqa: E402
 from m4sconverter.hashfile import combined_md5  # noqa: E402
+from m4sconverter.metadata import normalize, parse_track_hint  # noqa: E402
 from m4sconverter.models import LayoutMode, NameFilter, Options, VideoItem  # noqa: E402
-from m4sconverter.mux import find_payload_offset  # noqa: E402
+from m4sconverter.mux import _sniff_handler_type, find_payload_offset  # noqa: E402
+from m4sconverter.scanner import pair_m4s  # noqa: E402
 from m4sconverter.naming import (  # noqa: E402
     build_context,
     render_template,
@@ -245,6 +247,60 @@ def test_unique_path() -> None:
         check("再冲突加 _2", unique_path(p).name, "a_2.mp4")
 
 
+def test_pc_cache() -> None:
+    section("PC 端缓存识别与配对")
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp) / "43617619619"
+        d.mkdir()
+        (d / "videoInfo.json").write_text(
+            '{"type":"ugc","cid":43617619619,"title":"测试PC视频","uname":"测试UP",'
+            '"duration":294,"danmaku":42,"qn":112,"status":"completed","p":1,"tabName":"P1"}',
+            encoding="utf-8",
+        )
+        (d / ".playurl").write_text(
+            '{"code":0,"data":{"quality":112,"timelength":293988,'
+            '"support_formats":[{"quality":112,"display_desc":"1080P","superscript":"高码率"}],'
+            '"dash":{"video":[{"id":112,"width":1920,"height":1080,'
+            '"baseUrl":"https://example.com/43617619619-1-30112.m4s"}],'
+            '"audio":[{"id":30280,"baseUrl":"https://example.com/43617619619-1-30280.m4s"}]}}}',
+            encoding="utf-8",
+        )
+        v_file = d / "43617619619-1-30112.m4s"
+        a_file = d / "43617619619-1-30280.m4s"
+        # 构造带 9 字节 '000000000' 前缀的最小 ftyp + moov/trak/mdia/hdlr 结构
+        hdlr_v = b"\x00\x00\x00\x21hdlr\x00\x00\x00\x00\x00\x00\x00\x00vide" + b"\x00" * 13
+        hdlr_a = b"\x00\x00\x00\x21hdlr\x00\x00\x00\x00\x00\x00\x00\x00soun" + b"\x00" * 13
+
+        def wrap_box(btype: bytes, payload: bytes) -> bytes:
+            return (len(payload) + 8).to_bytes(4, "big") + btype + payload
+
+        ftyp = wrap_box(b"ftyp", b"iso5\x00\x00\x02\x00iso5iso6")
+        v_file.write_bytes(b"000000000" + ftyp + wrap_box(b"moov", wrap_box(b"trak", wrap_box(b"mdia", hdlr_v))))
+        a_file.write_bytes(b"000000000" + ftyp + wrap_box(b"moov", wrap_box(b"trak", wrap_box(b"mdia", hdlr_a))))
+
+        check("带 000000000 前缀嗅探 video", _sniff_handler_type(v_file), "video")
+        check("带 000000000 前缀嗅探 audio", _sniff_handler_type(a_file), "audio")
+
+        hint = parse_track_hint(d / "videoInfo.json", "videoInfo.json", d)
+        check("PC .playurl 提取 30112 视频轨道", "30112" in hint.video_ids, True)
+        check("PC .playurl 提取 30280 音频轨道", "30280" in hint.audio_ids, True)
+
+        vp, ap, how = pair_m4s([v_file, a_file], hint)
+        check("PC m4s 配对成功", (vp, ap, how), (v_file, a_file, "hint"))
+
+        fields = normalize(
+            {"cid": 43617619619, "title": "测试PC视频", "uname": "测试UP",
+             "duration": 294, "danmaku": 42, "qn": 112, "status": "completed"},
+            "videoInfo.json",
+            d,
+        )
+        check("PC 画质号 qn", fields["qid"], "112")
+        check("PC 画质描述", fields["quality"], "1080P 高码率")
+        check("PC 弹幕数", fields["danmaku_count"], 42)
+        check("PC 毫秒时长", fields["duration_ms"], 293988)
+        check("PC 宽高", (fields["width"], fields["height"]), (1920, 1080))
+
+
 def main() -> int:
     print("B站缓存转换器 —— 离线冒烟测试")
     test_filter()
@@ -254,6 +310,7 @@ def main() -> int:
     test_ass_text()
     test_hash()
     test_unique_path()
+    test_pc_cache()
     print("\n" + "=" * 60)
     if FAILED:
         print(f"失败 {len(FAILED)} 项：")

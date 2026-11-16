@@ -21,8 +21,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer, QEvent, pyqtSignal
-from PyQt5.QtGui import QColor, QIcon
+from PyQt5.QtCore import Qt, QTimer, QEvent, QUrl, pyqtSignal
+from PyQt5.QtGui import QColor, QDesktopServices, QIcon
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -53,7 +53,7 @@ from m4sconverter.scanner import describe
 from m4sconverter.utils import CallbackHandler, human_duration
 
 from .options_panel import OptionsPanel
-from .worker import ConvertWorker, ScanWorker
+from .worker import ConvertWorker, RELEASES_PAGE_URL, ReleaseInfo, ScanWorker, UpdateCheckWorker
 from .theme import apply_theme, configure_dpi, section_title
 from .ffmpeg_dialog import CheckWorker, FFmpegDialog
 from .cache_help import CacheHelpDialog
@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self.scan_worker: ScanWorker | None = None
         self.convert_worker: ConvertWorker | None = None
         self.tool_worker: CheckWorker | None = None
+        self.update_worker: UpdateCheckWorker | None = None
         self.setup_dialog: FFmpegDialog | None = None
         self._show_setup_after_check = False
 
@@ -185,6 +186,9 @@ class MainWindow(QMainWindow):
         titles.addWidget(subtitle)
         heading.addLayout(titles)
         heading.addStretch(1)
+        self.update_btn = QPushButton("检查更新")
+        self.update_btn.clicked.connect(self.on_check_update)
+        heading.addWidget(self.update_btn)
         self.cache_help_btn = QPushButton("缓存目录在哪？")
         self.cache_help_btn.clicked.connect(self.show_cache_help)
         heading.addWidget(self.cache_help_btn)
@@ -469,6 +473,62 @@ class MainWindow(QMainWindow):
         self.cache_help_dialog = CacheHelpDialog(self)
         self.cache_help_dialog.directory_selected.connect(self.top_import_edit.setText)
         self.cache_help_dialog.open()
+
+    def on_check_update(self) -> None:
+        if self.update_worker is not None and self.update_worker.isRunning():
+            return
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("正在检查…")
+        self.status_label.setText("正在检查 GitHub Release 最新版本…")
+        self.update_worker = UpdateCheckWorker(__version__, self)
+        self.update_worker.checked.connect(self._on_update_checked)
+        self.update_worker.failed.connect(self._on_update_failed)
+        self.update_worker.finished.connect(self._on_update_finished)
+        self.update_worker.start()
+
+    def _on_update_finished(self) -> None:
+        self.update_btn.setEnabled(True)
+        self.update_btn.setText("检查更新")
+
+    def _on_update_checked(self, info: ReleaseInfo) -> None:
+        if info.has_update:
+            self._append_log(f"发现新版本：{info.tag_name}（当前 v{__version__}） -> {info.html_url}")
+            self.status_label.setText(f"发现新版本：{info.tag_name}")
+            notes = info.body.strip()
+            if len(notes) > 500:
+                notes = notes[:500].rstrip() + "\n…"
+            detail = f"\n\n更新说明：\n{notes}" if notes else ""
+            answer = QMessageBox.question(
+                self,
+                "发现新版本",
+                f"检测到新版本：{info.tag_name}（当前版本：v{__version__}）{detail}\n\n"
+                "是否前往 GitHub Releases 页面下载更新？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl(info.html_url))
+        else:
+            self._append_log(f"检查更新：当前 v{__version__} 已是最新版本（远端最新：{info.tag_name}）")
+            self.status_label.setText(f"当前 v{__version__} 已是最新版本")
+            QMessageBox.information(
+                self,
+                "已是最新版本",
+                f"当前版本 v{__version__} 已是最新版本（GitHub 最新 Release：{info.tag_name}）。",
+            )
+
+    def _on_update_failed(self, message: str) -> None:
+        self._append_log(f"[!] 检查更新失败：{message}")
+        self.status_label.setText("检查更新失败")
+        answer = QMessageBox.question(
+            self,
+            "检查更新失败",
+            f"{message}\n\n是否直接在浏览器中打开 GitHub Releases 页面查看？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl(RELEASES_PAGE_URL))
 
     def _open_dependency_check(self) -> None:
         self._show_setup_after_check = True
@@ -844,6 +904,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         if self.tool_worker is not None and self.tool_worker.isRunning():
             self.tool_worker.wait(9000)
+        if self.update_worker is not None and self.update_worker.isRunning():
+            self.update_worker.wait(3000)
         if self.convert_worker is not None and self.convert_worker.isRunning():
             answer = QMessageBox.question(self, "仍在转换",
                                           "转换还没结束，确定退出吗？",

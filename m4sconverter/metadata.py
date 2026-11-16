@@ -137,6 +137,27 @@ def find_danmaku_xml(media_dir: Path, cid: str) -> Path | None:
     return None
 
 
+def find_danmaku_pb(media_dir: Path) -> list[Path]:
+    """查找 PC 端 ``dm1``/``dm2``… 或移动端 ``danmaku.pb`` 等 Protobuf 弹幕文件。"""
+    for directory in (media_dir, media_dir.parent):
+        out: list[ tuple[int, Path] ] = []
+        try:
+            for p in directory.iterdir():
+                if not p.is_file():
+                    continue
+                low = p.name.lower()
+                if low == "danmaku.pb" and p.stat().st_size > 0:
+                    out.append((0, p))
+                elif low.startswith("dm") and low[2:].isdigit() and p.stat().st_size > 0:
+                    out.append((int(low[2:]), p))
+        except OSError:
+            continue
+        if out:
+            out.sort(key=lambda item: (item[0], item[1].name))
+            return [p for _, p in out]
+    return []
+
+
 def find_existing_ass(media_dir: Path, cid: str) -> Path | None:
     names: list[Path] = [media_dir / DANMAKU_ASS, media_dir.parent / DANMAKU_ASS]
     if cid:
@@ -154,8 +175,15 @@ def find_existing_ass(media_dir: Path, cid: str) -> Path | None:
     return None
 
 
-def find_cover(media_dir: Path, cover_url: str) -> Path | None:
-    for name in ("cover.jpg", "cover.png", "cover.webp"):
+def find_cover(media_dir: Path, cover_url: str, raw: dict[str, Any] | None = None) -> Path | None:
+    if isinstance(raw, dict):
+        for key in ("coverPath", "groupCoverPath"):
+            val = _s(raw.get(key))
+            if val:
+                p = Path(val)
+                if p.is_file():
+                    return p
+    for name in ("cover.jpg", "cover.png", "cover.webp", "image.jpg", "image.png", "group.jpg"):
         for directory in (media_dir, media_dir.parent):
             p = directory / name
             if p.is_file():
@@ -181,6 +209,9 @@ def find_cover(media_dir: Path, cover_url: str) -> Path | None:
 # 轨道提示（index.json / .playurl）
 # ---------------------------------------------------------------------------
 
+_URL_TRACK_RE = re.compile(r"-(\d+)\.m4s(?:$|\?)", re.IGNORECASE)
+
+
 @dataclass
 class TrackHint:
     """从 index.json / .playurl 提取的轨道 id，用于把 m4s 文件配成对。"""
@@ -194,39 +225,86 @@ class TrackHint:
         return not self.video_ids and not self.audio_ids
 
 
+def _append_unique(target: list[str], value: str) -> None:
+    if value and value not in target:
+        target.append(value)
+
+
+def _extract_track_ids(track: Any, target: list[str]) -> None:
+    if not isinstance(track, dict):
+        return
+    tid = _s(track.get("id"))
+    if tid:
+        _append_unique(target, tid)
+        if tid.isdigit() and int(tid) < 30000:
+            # B 站 PC / TV 端将 dash.video[].id（如 80/112/116）加 30000 作为文件名后缀（30080/30112/30116）
+            _append_unique(target, str(30000 + int(tid)))
+    for url_key in ("baseUrl", "base_url"):
+        url = _s(track.get(url_key))
+        if url:
+            m = _URL_TRACK_RE.search(url)
+            if m:
+                _append_unique(target, m.group(1))
+
+
+def _collect_dash_hint(dash: Any, hint: TrackHint) -> None:
+    if not isinstance(dash, dict):
+        return
+    for track in (dash.get("video") or []):
+        _extract_track_ids(track, hint.video_ids)
+    for track in (dash.get("audio") or []):
+        _extract_track_ids(track, hint.audio_ids)
+    dolby = dash.get("dolby")
+    if isinstance(dolby, dict):
+        for track in (dolby.get("audio") or []):
+            _extract_track_ids(track, hint.audio_ids)
+    flac = dash.get("flac")
+    if isinstance(flac, dict) and isinstance(flac.get("audio"), dict):
+        _extract_track_ids(flac.get("audio"), hint.audio_ids)
+    if hint.video_ids and not hint.video_qid:
+        hint.video_qid = hint.video_ids[0]
+
+
+def _find_playurl_file(media_dir: Path, info_path: Path | None = None, info_kind: str = "") -> Path | None:
+    if info_kind == INFO_PLAYURL and info_path is not None and info_path.is_file():
+        return info_path
+    for level in (media_dir, media_dir.parent):
+        for cand in _playurl_candidates(level):
+            if cand.is_file():
+                return cand
+    return None
+
+
 def parse_track_hint(info_path: Path | None, info_kind: str, media_dir: Path) -> TrackHint:
     hint = TrackHint()
-    if info_kind == INFO_PLAYURL and info_path is not None:
+    playurl_path = _find_playurl_file(media_dir, info_path, info_kind)
+    if playurl_path is not None:
+        data = read_json(playurl_path)
+        if data:
+            dash = (
+                _dig(data, "data", "dash")
+                or _dig(data, "result", "dash")
+                or data.get("dash")
+                or {}
+            )
+            _collect_dash_hint(dash, hint)
+
+    if info_path is not None and info_kind != INFO_PLAYURL and info_path.is_file():
         data = read_json(info_path)
-        if not data:
-            return hint
-        dash = _dig(data, "data", "dash") or data.get("dash") or {}
-        for track in (dash.get("video") or []):
-            tid = _s(_dig(track, "id"))
-            if tid:
-                hint.video_ids.append(tid)
-        for track in (dash.get("audio") or []):
-            tid = _s(_dig(track, "id"))
-            if tid:
-                hint.audio_ids.append(tid)
-        if hint.video_ids:
-            hint.video_qid = hint.video_ids[0]
-        return hint
+        if data:
+            dash = (
+                _dig(data, "data", "dash")
+                or _dig(data, "result", "dash")
+                or data.get("dash")
+                or {}
+            )
+            _collect_dash_hint(dash, hint)
 
     index = media_dir / INFO_INDEX
     if index.is_file():
         data = read_json(index)
         if data:
-            for track in (data.get("video") or []):
-                tid = _s(_dig(track, "id"))
-                if tid:
-                    hint.video_ids.append(tid)
-            for track in (data.get("audio") or []):
-                tid = _s(_dig(track, "id"))
-                if tid:
-                    hint.audio_ids.append(tid)
-            if hint.video_ids:
-                hint.video_qid = hint.video_ids[0]
+            _collect_dash_hint(data, hint)
     return hint
 
 
@@ -235,6 +313,21 @@ def parse_track_hint(info_path: Path | None, info_kind: str, media_dir: Path) ->
 # ---------------------------------------------------------------------------
 
 _QUALITY_RE = re.compile(r"^\d{2,4}$")
+
+_QN_LABELS: dict[str, str] = {
+    "127": "8K",
+    "126": "杜比视界",
+    "125": "HDR",
+    "120": "4K",
+    "116": "1080P60",
+    "112": "1080P+",
+    "80": "1080P",
+    "74": "720P60",
+    "64": "720P",
+    "32": "480P",
+    "16": "360P",
+    "6": "240P",
+}
 
 
 def normalize(raw: dict[str, Any], kind: str, media_dir: Path) -> dict[str, Any]:
@@ -245,7 +338,8 @@ def normalize(raw: dict[str, Any], kind: str, media_dir: Path) -> dict[str, Any]
 
     group = _s(raw.get("groupTitle")) or _s(raw.get("owner_name"))
     title = _s(_dig(page, "download_subtitle")) or _s(raw.get("title")) or _s(ep.get("title"))
-    part = _s(_dig(page, "part"))
+    tab_name = _s(raw.get("tabName"))
+    part = _s(_dig(page, "part")) or (tab_name if tab_name and tab_name != "正片" else "")
     up = _s(raw.get("uname")) or _s(raw.get("owner_name"))
     status = _s(raw.get("status")) or _s(_dig(page, "download_title"))
     item_id = _s(raw.get("itemId")) or _s(raw.get("item_id")) or _s(raw.get("owner_id"))
@@ -253,8 +347,15 @@ def normalize(raw: dict[str, Any], kind: str, media_dir: Path) -> dict[str, Any]
     cid = _s(_dig(page, "cid")) or _s(raw.get("cid"))
     if not cid and media_dir.name.startswith("c_"):
         cid = media_dir.name[2:]
+    elif not cid and media_dir.name.isdigit():
+        cid = media_dir.name
 
-    qid = _s(raw.get("video_quality")) or _s(raw.get("prefered_video_quality")) or _s(raw.get("quality"))
+    qid = (
+        _s(raw.get("video_quality"))
+        or _s(raw.get("prefered_video_quality"))
+        or _s(raw.get("quality"))
+        or _s(raw.get("qn"))
+    )
     if not qid and _QUALITY_RE.match(media_dir.name):
         qid = media_dir.name
 
@@ -262,6 +363,45 @@ def normalize(raw: dict[str, Any], kind: str, media_dir: Path) -> dict[str, Any]
 
     width = _i(_dig(page, "width")) or _i(dim.get("width")) or _i(raw.get("width"))
     height = _i(_dig(page, "height")) or _i(dim.get("height")) or _i(raw.get("height"))
+    duration_ms = _i(raw.get("total_time_milli"))
+
+    # PC 端补充：从同目录 .playurl 补齐画质描述、宽高、毫秒时长
+    playurl_path = _find_playurl_file(media_dir)
+    if playurl_path is not None:
+        play_raw = read_json(playurl_path) or {}
+        play_data = play_raw.get("data") if isinstance(play_raw.get("data"), dict) else (
+            play_raw.get("result") if isinstance(play_raw.get("result"), dict) else play_raw
+        )
+        if isinstance(play_data, dict):
+            if not qid:
+                qid = _s(play_data.get("quality"))
+            if not duration_ms:
+                duration_ms = _i(play_data.get("timelength")) or (_i(_dig(play_data, "dash", "duration")) * 1000)
+            if not quality and qid:
+                for fmt in (play_data.get("support_formats") or []):
+                    if isinstance(fmt, dict) and _s(fmt.get("quality")) == qid:
+                        disp = _s(fmt.get("display_desc"))
+                        sup = _s(fmt.get("superscript"))
+                        if disp and sup and sup not in disp:
+                            quality = f"{disp} {sup}" if not sup.isascii() else f"{disp}{sup}"
+                        else:
+                            quality = disp or _s(fmt.get("new_description"))
+                        break
+            if not (width and height):
+                dash_videos = _dig(play_data, "dash", "video") or []
+                if isinstance(dash_videos, list):
+                    for vtrack in dash_videos:
+                        if isinstance(vtrack, dict) and (not qid or _s(vtrack.get("id")) == qid):
+                            width = width or _i(vtrack.get("width"))
+                            height = height or _i(vtrack.get("height"))
+                            if width and height:
+                                break
+
+    if not duration_ms:
+        duration_ms = _i(raw.get("duration")) * 1000
+
+    if not quality and qid in _QN_LABELS:
+        quality = _QN_LABELS[qid]
 
     series = _s(raw.get("season_title")) or _s(raw.get("series_title")) or _s(ep.get("long_title"))
 
@@ -284,14 +424,14 @@ def normalize(raw: dict[str, Any], kind: str, media_dir: Path) -> dict[str, Any]
         "uid": _s(raw.get("uid")),
         "width": width,
         "height": height,
-        "duration_ms": _i(raw.get("total_time_milli")),
-        "danmaku_count": _i(raw.get("danmaku_count")),
-        "cover_url": _s(raw.get("cover")),
+        "duration_ms": duration_ms,
+        "danmaku_count": _i(raw.get("danmaku_count")) or _i(raw.get("danmaku")),
+        "cover_url": _s(raw.get("cover")) or _s(raw.get("coverUrl")) or _s(raw.get("groupCoverUrl")),
         "series_title": series,
         "type_tag": _s(raw.get("type_tag")),
         "media_type": _i(raw.get("media_type")),
         "season_id": _s(raw.get("season_id")),
-        "page": _i(_dig(page, "page")),
+        "page": _i(_dig(page, "page")) or _i(raw.get("p")),
         "raw": raw,
     }
 

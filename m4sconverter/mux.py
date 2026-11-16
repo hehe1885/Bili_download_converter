@@ -156,7 +156,10 @@ def _sniff_handler_type(path: Path, read_size: int = 4 << 20) -> str:
             pos += size
 
     depth_limit = 6
-    stack = [(0, len(data), 0)]
+    offset = find_payload_offset(data[:4096])
+    if offset < 0 or offset >= len(data):
+        offset = 0
+    stack = [(offset, len(data), 0)]
     while stack:
         start, end, depth = stack.pop()
         if depth > depth_limit:

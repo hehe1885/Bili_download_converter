@@ -72,27 +72,42 @@ def _classify_by_name(files: list[Path]) -> tuple[Path | None, Path | None]:
     return video, audio
 
 
+_PC_AUDIO_IDS = ("30280", "30252", "30251", "30250", "30232", "30216")
+_PC_TRACK_RE = re.compile(r"-(\d+)\.m4s$", re.IGNORECASE)
+
+
 def _classify_by_hint(files: list[Path], hint: meta.TrackHint) -> tuple[Path | None, Path | None]:
-    """按 ``-<id>.m4s`` 的文件名匹配 index.json / .playurl 里的轨道 id。"""
-    if hint.empty:
-        return None, None
+    """按 ``-<id>.m4s`` 的文件名匹配 index.json / .playurl 里的轨道 id（含 PC 端轨道号特征兜底）。"""
     video = audio = None
-    for p in files:
-        if video is None:
-            for vid in hint.video_ids:
-                if p.name.endswith(f"-{vid}{M4S_SUFFIX}") or f"-{vid}." in p.name:
-                    video = p
-                    break
-        if audio is None:
-            for aid in hint.audio_ids:
-                if p.name.endswith(f"-{aid}{M4S_SUFFIX}") or f"-{aid}." in p.name:
+    if not hint.empty:
+        for p in files:
+            if video is None:
+                for vid in hint.video_ids:
+                    if p.name.endswith(f"-{vid}{M4S_SUFFIX}") or f"-{vid}." in p.name:
+                        video = p
+                        break
+            if audio is None:
+                for aid in hint.audio_ids:
+                    if p.name.endswith(f"-{aid}{M4S_SUFFIX}") or f"-{aid}." in p.name:
+                        audio = p
+                        break
+    if video is None or audio is None:
+        for p in files:
+            m = _PC_TRACK_RE.search(p.name)
+            if not m:
+                continue
+            tid = m.group(1)
+            if tid in _PC_AUDIO_IDS or tid.startswith("302"):
+                if audio is None and p != video:
                     audio = p
-                    break
+            elif tid.startswith(("300", "301", "1000")):
+                if video is None and p != audio:
+                    video = p
     return video, audio
 
 
 def _classify_by_probe(files: list[Path]) -> tuple[Path | None, Path | None]:
-    """名字完全无线索时，用 ffprobe 判 codec_type；失败则按体积猜（大的是视频）。"""
+    """名字完全无线索时，用 probe_tracks 判 codec_type；失败则按体积猜（大的是视频）。"""
     from .mux import probe_tracks  # 延迟导入，避免循环
 
     video = audio = None
@@ -102,9 +117,18 @@ def _classify_by_probe(files: list[Path]) -> tuple[Path | None, Path | None]:
             video = p
         elif kind == "audio" and audio is None:
             audio = p
-    if video is None and audio is None and len(files) == 2:
+    if (video is None or audio is None) and len(files) == 2:
         sized = sorted(files, key=lambda x: _safe_size(x), reverse=True)
-        video, audio = sized[0], sized[1]
+        if video is not None and audio is None:
+            other = sized[1] if sized[0] == video else sized[0]
+            if _safe_size(other) > 0:
+                audio = other
+        elif audio is not None and video is None:
+            other = sized[0] if sized[1] == audio else sized[1]
+            if _safe_size(other) > 0:
+                video = other
+        else:
+            video, audio = sized[0], sized[1]
     return video, audio
 
 
@@ -220,7 +244,7 @@ def build_item(media_dir: Path, root: Path, video: Path, audio: Path, index: int
 
     item.danmaku_xml = meta.find_danmaku_xml(media_dir, item.cid)
     item.existing_ass = meta.find_existing_ass(media_dir, item.cid)
-    item.cover_local = meta.find_cover(media_dir, item.cover_url)
+    item.cover_local = meta.find_cover(media_dir, item.cover_url, item.info_raw)
 
     if item.info_path is None:
         item.message = "未找到元数据文件（entry.json / .videoInfo / .playurl）"

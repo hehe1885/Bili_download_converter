@@ -7,18 +7,118 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import threading
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from m4sconverter import __version__
 from m4sconverter.converter import Converter
 from m4sconverter.models import ConvertResult, Options, ScanReport, VideoItem
 from m4sconverter.scanner import scan
 
 LOG = logging.getLogger("m4s")
+
+GITHUB_REPO = "hehe1885/Bili_download_converter"
+RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
+LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASES_LIST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
+
+
+@dataclass
+class ReleaseInfo:
+    tag_name: str
+    version: str
+    name: str
+    html_url: str
+    body: str
+    has_update: bool
+
+
+def parse_version(text: str) -> tuple[int, ...]:
+    """把 ``v0.2.2`` / ``0.2.2`` 解析为可比较的整数元组 ``(0, 2, 2)``。"""
+    cleaned = (text or "").strip().lstrip("vV")
+    nums = [int(p) for p in re.findall(r"\d+", cleaned)]
+    return tuple(nums) if nums else (0,)
+
+
+def is_newer_version(remote: str, local: str = __version__) -> bool:
+    r = list(parse_version(remote))
+    l = list(parse_version(local))
+    length = max(len(r), len(l))
+    r.extend([0] * (length - len(r)))
+    l.extend([0] * (length - len(l)))
+    return tuple(r) > tuple(l)
+
+
+def fetch_latest_release(current_version: str = __version__, timeout: float = 10.0) -> ReleaseInfo:
+    """查询 GitHub Releases 最新版本信息。"""
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"Bili_download_converter/{current_version}",
+    }
+    data = None
+    last_exc: Exception | None = None
+    for url, is_list in ((LATEST_RELEASE_API, False), (RELEASES_LIST_API, True)):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
+            if is_list:
+                if isinstance(payload, list) and payload:
+                    data = next((r for r in payload if isinstance(r, dict) and not r.get("draft")), payload[0])
+            elif isinstance(payload, dict):
+                data = payload
+            if data:
+                break
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+            last_exc = exc
+            continue
+
+    if not isinstance(data, dict) or not data.get("tag_name"):
+        if last_exc is not None:
+            raise RuntimeError(f"无法连接 GitHub Releases：{last_exc}") from last_exc
+        raise RuntimeError("未在仓库中找到已发布的 Release 版本")
+
+    tag = str(data.get("tag_name") or "").strip()
+    ver = tag.lstrip("vV") or tag
+    name = str(data.get("name") or tag).strip()
+    html_url = str(data.get("html_url") or RELEASES_PAGE_URL).strip()
+    body = str(data.get("body") or "").strip()
+    return ReleaseInfo(
+        tag_name=tag,
+        version=ver,
+        name=name,
+        html_url=html_url,
+        body=body,
+        has_update=is_newer_version(tag, current_version),
+    )
+
+
+class UpdateCheckWorker(QThread):
+    """在后台查询 GitHub Release 是否有新版本。"""
+
+    checked = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, current_version: str = __version__, parent=None) -> None:
+        super().__init__(parent)
+        self.current_version = current_version
+
+    def run(self) -> None:
+        try:
+            info = fetch_latest_release(self.current_version)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+            return
+        self.checked.emit(info)
 
 
 class ScanWorker(QThread):
@@ -131,4 +231,13 @@ class ConvertWorker(QThread):
         self.all_finished.emit(results)
 
 
-__all__ = ["ScanWorker", "ConvertWorker"]
+__all__ = [
+    "ScanWorker",
+    "ConvertWorker",
+    "UpdateCheckWorker",
+    "ReleaseInfo",
+    "RELEASES_PAGE_URL",
+    "parse_version",
+    "is_newer_version",
+    "fetch_latest_release",
+]

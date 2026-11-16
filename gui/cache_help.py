@@ -13,8 +13,14 @@ from .widgets import RoundedDialog, apply_browser_scrollbars
 
 
 def windows_cache_location() -> Path:
+    videos_bili = Path.home() / "Videos" / "bilibili"
+    if videos_bili.is_dir():
+        return videos_bili
     appdata = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
-    return appdata / "BilibiliDownload" / "cache" / "data"
+    legacy = appdata / "BilibiliDownload" / "cache" / "data"
+    if legacy.is_dir():
+        return legacy
+    return videos_bili
 
 
 class CacheHelpDialog(RoundedDialog):

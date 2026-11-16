@@ -32,7 +32,7 @@ from . import hashfile
 from . import metadata as meta
 from . import naming
 from . import nfo as nfo_mod
-from .danmaku import AssConfig, parse_danmaku_xml, write_ass
+from .danmaku import AssConfig, parse_danmaku_pb, parse_danmaku_xml, write_ass, write_danmaku_xml
 from .danmaku.fetcher import fetch_danmaku
 from .models import (
     ConvertResult,
@@ -304,18 +304,23 @@ class Converter:
             except OSError as exc:
                 LOG.warning("复用已有字幕失败，改为重新生成: %s", exc)
 
-        xml = fetch_danmaku(item.danmaku_xml, item.cid, work,
-                            allow_download=cfg_opts.download_missing)
-        if xml is None:
-            LOG.warning("没有可用的弹幕文件，跳过字幕: %s", item.primary_title())
-            return None
-
-        bullets, header = parse_danmaku_xml(xml)
+        pb_files = meta.find_danmaku_pb(item.media_dir) if item.danmaku_xml is None else []
+        if pb_files:
+            bullets, header = parse_danmaku_pb(pb_files)
+            src_label = ", ".join(p.name for p in pb_files)
+        else:
+            xml = fetch_danmaku(item.danmaku_xml, item.cid, work,
+                                allow_download=cfg_opts.download_missing)
+            if xml is None:
+                LOG.warning("没有可用的弹幕文件，跳过字幕: %s", item.primary_title())
+                return None
+            bullets, header = parse_danmaku_xml(xml)
+            src_label = xml.name
         if not bullets:
-            # 该稿件确实没有任何弹幕（源 XML 里 <d> 数为 0）。
+            # 该稿件确实没有任何弹幕（源弹幕数为 0）。
             # 仍然写一个"只有头部 + 样式"的合法 ASS，保证开启 ass 开关时
             # 每个 mp4 配一个同名 .ass。
-            LOG.warning("弹幕内容为空，生成空白字幕: %s", xml.name)
+            LOG.warning("弹幕内容为空，生成空白字幕: %s", src_label)
 
         try:
             stats = write_ass(bullets, self._ass_config(item), ass_path, header.as_tuple())
@@ -378,7 +383,7 @@ class Converter:
         """
         ids = " ".join(p for p in (
             f"av{item.avid}" if item.avid else "",
-            f"BV{item.bvid}" if item.bvid else "",
+            (item.bvid if item.bvid.upper().startswith("BV") else f"BV{item.bvid}") if item.bvid else "",
             f"cid={item.cid}" if item.cid else "",
             f"up={item.up}" if item.up else "",
         ) if p)
@@ -402,12 +407,18 @@ class Converter:
             except OSError as exc:
                 LOG.warning("导出封面失败: %s", exc)
 
-        if opts.copy_danmaku_xml and item.danmaku_xml and item.danmaku_xml.is_file():
+        if opts.copy_danmaku_xml:
             dest = base.with_name(base.name + ".danmaku.xml")
-            try:
-                shutil.copy2(item.danmaku_xml, dest)
-            except OSError as exc:
-                LOG.warning("导出 danmaku.xml 失败: %s", exc)
+            if item.danmaku_xml and item.danmaku_xml.is_file():
+                try:
+                    shutil.copy2(item.danmaku_xml, dest)
+                except OSError as exc:
+                    LOG.warning("导出 danmaku.xml 失败: %s", exc)
+            else:
+                pb_files = meta.find_danmaku_pb(item.media_dir)
+                if pb_files:
+                    bullets, _ = parse_danmaku_pb(pb_files)
+                    write_danmaku_xml(bullets, dest, cid=item.cid)
 
         if opts.write_nfo:
             nfo_mod.write_nfo(base.with_suffix(".nfo"), item, poster_name=poster_name)
